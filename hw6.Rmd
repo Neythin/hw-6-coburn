@@ -1,0 +1,100 @@
+---
+title: "hw6"
+author: "Nathan De Los Santos"
+output:
+  pdf_document: default
+  html_document:
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidymodels)
+library(tidyverse)
+library(ISLR) # For the Smarket data set
+library(ISLR2) # For the Bikeshare data set
+library(discrim)
+library(poissonreg)
+library(corrr)
+library(klaR) # for naive bayes
+library(ggplot2)
+library(ggthemes)
+library(pROC)
+tidymodels_prefer()
+pokemon_data <- read.csv('data/pokemon.csv')
+```
+
+## Exercise 1
+
+```{r}
+library(janitor)
+
+pokemon <- clean_names(pokemon_data)
+
+pokemon <- pokemon %>%
+  filter(type_1 %in% c('Bug', 'Fire', 'Grass', 'Normal', 'Water', 'Psychic'))
+
+pokemon$type_1 <- factor(pokemon$type_1)
+pokemon$legendary <- factor(pokemon$legendary)
+```
+
+```{r}
+pokeSplit <- initial_split(pokemon, prop = 0.7, strata = type_1)
+pokeTrain <- training(pokeSplit)
+pokeTest <- testing(pokeSplit)
+```
+
+```{r}
+pokeFold <- vfold_cv(pokeTrain, strata = type_1, v = 5)
+
+pokeRecipe <- recipe(type_1 ~ legendary + generation + sp_atk + attack, speed, defense, hp, sp_def, data=pokeTrain) %>% 
+  step_dummy(all_nominal_predictors()) %>%
+  step_center(all_nominal_predictors()) %>% 
+  step_scale(all_nominal_predictors())
+```
+
+## Exercise 2
+
+```{r}
+library(corrplot)
+
+pokeCorr <- pokeTrain %>%
+  correlate()
+
+rplot(pokeCorr)
+```
+For the most part, we can see that all the variables are positively correlated with each other. It actually seems that there are no variables that are negatively correlated with each other -- either positive or not at all. Relationships such as total and sp_def or total and sp_atk make sense, because the stronger a Pokemon's sp_def and sp_atk are, it's obvious that the total rating of the Pokemon also goes up.
+
+## Exercise 3
+
+```{r}
+library(rpart.plot)
+library(vip)
+library(randomForest)
+library(xgboost)
+
+treeSpecify <- decision_tree() %>%
+  set_engine("rpart")
+
+treeClass <- treeSpecify %>%
+  set_mode("classification")
+
+treeFit <- treeClass %>% 
+  fit(type_1 ~ ., data = pokeTrain)
+
+save(treeFit, file = 'treeFit.rda')
+
+pokeFlow <- workflow() %>%
+  add_model(treeClass %>% set_args(cost_complexity = tune())) %>%
+  add_formula(type_1 ~ .)
+
+pokeGrid <- grid_regular(cost_complexity(range = c(-3, -1)), levels = 10)
+
+pokeTuned <- tune_grid(pokeFlow, resamples = pokeFold, grid = pokeGrid, metrics = 'roc_auc')
+
+autoplot(pokeTuned)
+```
+
