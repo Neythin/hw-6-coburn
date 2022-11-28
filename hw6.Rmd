@@ -24,13 +24,15 @@ library(ggplot2)
 library(ggthemes)
 library(pROC)
 tidymodels_prefer()
-pokemon_data <- read.csv('data/pokemon.csv')
+pokemon_data <- read.csv('pokemon.csv')
 ```
 
 ## Exercise 1
 
 ```{r}
 library(janitor)
+
+set.seed(777)
 
 pokemon <- clean_names(pokemon_data)
 
@@ -50,10 +52,10 @@ pokeTest <- testing(pokeSplit)
 ```{r}
 pokeFold <- vfold_cv(pokeTrain, strata = type_1, v = 5)
 
-pokeRecipe <- recipe(type_1 ~ legendary + generation + sp_atk + attack, speed, defense, hp, sp_def, data=pokeTrain) %>% 
+pokeRecipe <- recipe(type_1 ~ legendary + generation + sp_atk + attack + speed + defense + hp + sp_def, data=pokeTrain) %>% 
   step_dummy(all_nominal_predictors()) %>%
-  step_center(all_nominal_predictors()) %>% 
-  step_scale(all_nominal_predictors())
+  step_center(all_numeric_predictors()) %>% 
+  step_scale(all_numeric_predictors())
 ```
 
 ## Exercise 2
@@ -83,18 +85,143 @@ treeClass <- treeSpecify %>%
   set_mode("classification")
 
 treeFit <- treeClass %>% 
-  fit(type_1 ~ ., data = pokeTrain)
-
-save(treeFit, file = 'treeFit.rda')
+  fit(type_1 ~ legendary + generation + sp_atk + attack + speed + defense + hp + sp_def, data = pokeTrain)
 
 pokeFlow <- workflow() %>%
   add_model(treeClass %>% set_args(cost_complexity = tune())) %>%
-  add_formula(type_1 ~ .)
+  add_formula(type_1 ~ legendary + generation + sp_atk + attack + speed + defense + hp + sp_def)
 
 pokeGrid <- grid_regular(cost_complexity(range = c(-3, -1)), levels = 10)
 
-pokeTuned <- tune_grid(pokeFlow, resamples = pokeFold, grid = pokeGrid, metrics = 'roc_auc')
+pokeTuned <- tune_grid(pokeFlow, resamples = pokeFold, grid = pokeGrid, metrics = metric_set(roc_auc))
 
 autoplot(pokeTuned)
+```
+
+## Exercise 4
+
+```{r}
+bestDecision <- tail(collect_metrics(pokeTuned) %>% arrange(mean), n = 1)
+bestDecision
+```
+The roc_auc of our best performing model is 0.6211677.
+
+## Exercise 5
+
+```{r}
+bestPoke <- select_best(pokeTuned)
+
+treeFinal <- finalize_workflow(pokeFlow, bestPoke)
+
+treeFinalFit <- fit(treeFinal, data = pokeTrain)
+```
+
+```{r}
+treeFinalFit %>%
+  extract_fit_engine() %>% 
+  rpart.plot()
+```
+
+## Exercise 5 Again
+
+Random Forest with Bagging, general boostrap aggragating, BAGGING
+
+```{r}
+randomSpec <- rand_forest() %>% 
+  set_engine('ranger', importance = 'impurity') %>% 
+  set_mode('classification')
+
+randomFlow <- workflow() %>% 
+  add_model(randomSpec %>% set_args(mtry = tune(), trees = tune(), min_n = tune())) %>% 
+  add_recipe(pokeRecipe)
+```
+
+```{r}
+pokeGrid2 <- grid_regular(mtry(range = c(1, 8)), trees(range = c(8, 64)), min_n(range = c(2, 16)), levels = 8)
+```
+
+
+## Exercise 6
+
+```{r}
+pokeTuned2 <- tune_grid(randomFlow, resamples = pokeFold, grid = pokeGrid2, metrics = metric_set(roc_auc))
+```
+
+```{r}
+autoplot(pokeTuned2)
+```
+
+## Exercise 7
+
+```{r}
+bestRandom <- tail(collect_metrics(pokeTuned2) %>% arrange(mean), n = 1)
+bestRandom
+```
+
+## Exercise 8
+
+```{r}
+bestPoke2 <- select_best(pokeTuned2, metric = 'roc_auc')
+
+randomFinal <- finalize_workflow(randomFlow, bestPoke2)
+
+randomFinalFit <- fit(randomFinal, data = pokeTrain)
+
+randomFinalFit %>% extract_fit_parsnip() %>% vip()
+```
+
+## Exercise 9
+
+```{r}
+boostSpec <- boost_tree() %>%
+  set_engine("xgboost") %>%
+  set_mode("classification")
+
+boostFlow <- workflow() %>% 
+  add_model(boostSpec %>% set_args(trees = tune())) %>% 
+  add_recipe(pokeRecipe)
+
+pokeGrid3 <- grid_regular(trees(range = c(10, 2000)), levels = 10)
+
+pokeTuned3 <- tune_grid(boostFlow, resamples = pokeFold, grid = pokeGrid3, metrics = metric_set(roc_auc))
+```
+
+```{r}
+bestBoost <- tail(collect_metrics(pokeTuned3) %>% arrange(mean), n = 1)
+bestBoost
+```
+
+## Exercise 10
+
+```{r}
+bind_rows(bestDecision, bestRandom, bestBoost)
+```
+Random Forest
+
+```{r}
+bestTree <- select_best(pokeTuned2)
+
+bestFinal <- finalize_workflow(randomFlow, bestTree)
+
+bestFinalFit <- fit(bestFinal, data = pokeTest)
+```
+
+```{r}
+pokePredict <- augment(bestFinalFit, new_data = pokeTest) %>% 
+  select(type_1, starts_with(".pred"))
+
+pokePredict %>% roc_auc(type_1, .pred_Bug:.pred_Water)
+```
+
+```{r}
+augment(bestFinalFit, new_data = pokeTest) %>%
+  roc_curve(type_1, .pred_Bug:.pred_Water) %>%
+  autoplot()
+```
+
+```{r}
+augment(bestFinalFit, new_data = pokeTest) %>%
+  conf_mat(truth = type_1, estimate = .pred_class) %>%
+  autoplot(type = "heatmap")
 ```
 
